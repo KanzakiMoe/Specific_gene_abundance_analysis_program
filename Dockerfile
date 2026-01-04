@@ -52,6 +52,6 @@ ENTRYPOINT ["/bin/bash", "-c", "\
 "]
 
 # R for plotting
-RUN apt-get install -y r-base \
+RUN apt-get update && apt-get install -y r-base \
     && R -e "install.packages(c('stringr','ggplot2','dplyr','readr','tidyr'), repos='https://cloud.r-project.org')"
 
