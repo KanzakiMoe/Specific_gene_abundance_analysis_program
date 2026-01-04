@@ -1,43 +1,78 @@
 #!/usr/bin/env Rscript
 
-library(readr)
 library(dplyr)
-library(stringr)
+library(tidyr)
+library(readr)
 library(ggplot2)
+library(stringr)
 
-infile  <- "results/anammox_coverm.tsv"
-outfile_table <- "results/anammox_abundance_summary.tsv"
-outfile_plot  <- "results/anammox_abundance_barplot.pdf"
+# read CoverM output
+df <- read_tsv("results/coverm_all.tsv", show_col_types = FALSE)
 
-df <- read_tsv(infile, show_col_types = FALSE)
-
-# Extract Mean / Covered Fraction columns
+# recognize column names
 mean_cols <- grep(" Mean$", colnames(df), value = TRUE)
 cov_cols  <- grep(" Covered Fraction$", colnames(df), value = TRUE)
 
-if (length(mean_cols) == 0 || length(mean_cols) != length(cov_cols)) {
+if (length(mean_cols) != length(cov_cols)) {
   stop("Mean and Covered Fraction columns do not match")
 }
 
 # resolve sample names
-samples <- str_replace(mean_cols, " Mean$", "")
+samples_mean <- str_remove(mean_cols, " Mean$")
+samples_cov  <- str_remove(cov_cols, " Covered Fraction$")
 
-# calculate abundance
-result <- data.frame(
-  sample = samples,
-  abundance = sapply(seq_along(samples), function(i) {
-    sum(df[[mean_cols[i]]] * df[[cov_cols[i]]])
-  })
-)
+if (!all(samples_mean == samples_cov)) {
+  stop("Sample names in Mean and Covered Fraction columns do not match")
+}
+
+samples <- samples_mean
+
+# change to long format
+mean_long <- df %>%
+  select(Contig, all_of(mean_cols)) %>%
+  pivot_longer(
+    cols = -Contig,
+    names_to = "sample",
+    values_to = "mean_coverage"
+  ) %>%
+  mutate(sample = str_remove(sample, " Mean$"))
+
+cov_long <- df %>%
+  select(Contig, all_of(cov_cols)) %>%
+  pivot_longer(
+    cols = -Contig,
+    names_to = "sample",
+    values_to = "covered_fraction"
+  ) %>%
+  mutate(sample = str_remove(sample, " Covered Fraction$"))
+
+df_long <- left_join(mean_long, cov_long,
+                     by = c("Contig", "sample"))
+
+# summarise total mean coverage and mean covered fraction per sample
+summary_df <- df_long %>%
+  group_by(sample) %>%
+  summarise(
+    total_mean_coverage = sum(mean_coverage, na.rm = TRUE),
+    mean_covered_fraction = mean(covered_fraction, na.rm = TRUE),
+    .groups = "drop"
+  )
 
 # export table
-write_tsv(result, outfile_table)
+write_tsv(summary_df, "results/coverm_summary.tsv")
 
 # plot barplot
-p <- ggplot(result, aes(x = sample, y = abundance)) +
+p <- ggplot(summary_df,
+            aes(x = sample, y = total_mean_coverage)) +
   geom_col(width = 0.6) +
-  xlab("Sample") +
-  ylab("Anammox gene abundance\n(Mean × Covered Fraction)") +
-  theme_bw(base_size = 14)
+  theme_bw() +
+  labs(
+    title = "Anammox contig abundance (CoverM)",
+    x = "Sample",
+    y = "Total Mean Coverage"
+  )
 
-ggsave(outfile_plot, p, width = 5, height = 4)
+ggsave("results/coverm_abundance_barplot.png",
+       p, width = 6, height = 4)
+
+message("Plot saved to results/coverm_abundance_barplot.png")
