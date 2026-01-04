@@ -68,15 +68,25 @@ for S in "${SAMPLES[@]}"; do
   bowtie2 -x contigs \
     -U qc/${S}.fq.gz \
     --threads ${THREADS} \
-  | samtools sort -@ 8 -o ${S}.bam
-  samtools index ${S}.bam
+  | samtools sort -@ 8 -o qc/${S}.bam
+  samtools index qc/${S}.bam
+done > mapping.log 2>&1
+
+# 8. quantification
+coverm contig \
+  --bam-files qc/A.bam qc/B.bam \
+  --methods mean covered_fraction \
+  --output-file results/coverm_all.tsv \
+  --threads ${THREADS} \
+
+# Generate mapping summary
+echo -e "sample\tmapped\ttotal" > results/bam_mapped_summary.tsv
+for sample in A B; do
+    total=$(samtools view -c "qc/${sample}.bam")
+    mapped=$(samtools view -c -F 4 "qc/${sample}.bam")
+    echo -e "${sample}\t${mapped}\t${total}" >> results/bam_mapped_summary.tsv
 done
 
-# 8. quantification (TPM / RPKM)
-coverm contig \
-  --bam-files A.bam B.bam \
-  --methods mean covered_fraction \
-  --output-file results/coverm_all.tsv
 
 awk 'NR==FNR {a[$1]; next} NR==1 || ($1 in a)' \
   results/anammox_contigs.txt \
