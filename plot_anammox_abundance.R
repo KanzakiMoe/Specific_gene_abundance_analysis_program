@@ -67,7 +67,7 @@ p <- ggplot(summary_df,
   geom_col(width = 0.6) +
   theme_bw() +
   labs(
-    title = "Anammox contig abundance (CoverM)",
+    title = "ANAMMOX contig abundance",
     x = "Sample",
     y = "Total Mean Coverage"
   )
@@ -75,4 +75,44 @@ p <- ggplot(summary_df,
 ggsave("results/coverm_abundance_barplot.png",
        p, width = 6, height = 4)
 
-message("Plot saved to results/coverm_abundance_barplot.png")
+# ===== Pie chart based on BAM mapping (Option B) =====
+bam_df <- read_tsv("results/bam_mapped_summary.tsv", show_col_types = FALSE)
+
+pie_df <- bam_df %>%
+  transmute(
+    sample,
+    Anammox = mapped,
+    `Non-anammox` = total - mapped
+  ) %>%
+  pivot_longer(
+    cols = c(Anammox, `Non-anammox`),
+    names_to = "type",
+    values_to = "reads"
+  ) %>%
+  group_by(sample) %>%
+  mutate(
+    fraction = reads / sum(reads),
+    label = sprintf("%.1f%%", fraction * 100)
+  )
+
+p_pie <- ggplot(pie_df,
+                aes(x = "", y = fraction, fill = type)) +
+  geom_col(width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  geom_text(
+    aes(label = label),
+    position = position_stack(vjust = 0.5),
+    size = 4
+  ) +
+  facet_wrap(~ sample) +
+  theme_void() +
+  labs(title = "Fraction of ANAMMOX-mapped reads")
+
+ggsave(
+  "results/coverm_abundance_pie.png",
+  p_pie,
+  width = 6,
+  height = 4
+)
+
+message("All plots generated successfully")
