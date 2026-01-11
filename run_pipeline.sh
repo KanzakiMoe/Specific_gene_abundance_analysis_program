@@ -1,27 +1,43 @@
 #!/usr/bin/env bash
 set -euo pipefail
+set -x
 
 # Parameters
 THREADS=24
-SAMPLES=("A" "B") 
+SAMPLES=("A" "B" "C")
+
+# Cache root
+CACHE=cache
+
+QC=${CACHE}/qc
+ASSEMBLY=${CACHE}/assembly
+HMM=${CACHE}/hmm
+FILTERED=${CACHE}/filtered
+MAPPING=${CACHE}/mapping
+LOGS=${CACHE}/logs
+
+mkdir -p ${QC} ${ASSEMBLY} ${HMM} ${FILTERED} ${MAPPING} ${LOGS} results
 
 # 0. QC
-mkdir -p qc
 for S in "${SAMPLES[@]}"; do
   fastp \
     -i reads/${S}.fastq.gz \
-    -o qc/${S}.fq.gz \
-    -w ${THREADS}
+    -o ${QC}/${S}.fq.gz \
+    -w ${THREADS} \
+    > ${LOGS}/fastp_${S}.log 2>&1
 done
 
 # 1. Co-assembly
-megahit \
-  -r qc/A.fq.gz,qc/B.fq.gz \
-  -o assembly \
-  -t ${THREADS} \
-  --min-contig-len 1000
+rm -rf ${ASSEMBLY}
 
-CONTIGS=assembly/final.contigs.fa
+megahit \
+  -r ${QC}/A.fq.gz,${QC}/B.fq.gz \
+  -o ${ASSEMBLY} \
+  -t ${THREADS} \
+  --min-contig-len 1000 \
+  > ${LOGS}/megahit.log 2>&1
+
+CONTIGS=${ASSEMBLY}/final.contigs.fa
 
 # 2. ORF prediction
 prodigal \
@@ -30,60 +46,63 @@ prodigal \
   -p meta
 
 # 3. HMM search (STRICT)
-mkdir -p hmm_out
 for G in hzsA hzsB hzsC hdh; do
   hmmsearch \
     --cpu ${THREADS} \
-    -E 1e-20 --domE 1e-20 \
+    -E 1e-1 --domE 1e-1 \
+    --tblout ${HMM}/${G}.tbl \
     hmm/${G}.hmm \
     proteins.faa \
-    > hmm_out/${G}.out
+    > ${HMM}/${G}.log 2>&1
 done
 
-# 4. filter results
-mkdir -p filtered
+# 4. filter HMM hits by score
 for G in hzsA hzsB hzsC hdh; do
-  grep -v "^#" hmm_out/${G}.out \
-  | awk '$6 >= 300 {print $1}' \
-  | sort -u \
-  > filtered/${G}_proteins.txt
+  awk '$1 !~ /^#/ && $6 >= 50 {print $1}' \
+    ${HMM}/${G}.tbl \
+    | sort -u > ${FILTERED}/${G}_proteins.txt
 done
 
 # 5. contig assembly
 for G in hzsA hzsB hzsC hdh; do
-  sed 's/_.*//' filtered/${G}_proteins.txt \
-  | sort -u > filtered/${G}_contigs.txt
+  sed 's/_.*//' ${FILTERED}/${G}_proteins.txt \
+    | sort -u > ${FILTERED}/${G}_contigs.txt
 done
 
 # 6. anammox contig filter
-comm -12 filtered/hzsA_contigs.txt filtered/hzsB_contigs.txt \
-| comm -12 - filtered/hzsC_contigs.txt \
-| comm -12 - filtered/hdh_contigs.txt \
+cat \
+  ${FILTERED}/hzsA_contigs.txt \
+  ${FILTERED}/hzsB_contigs.txt \
+  ${FILTERED}/hzsC_contigs.txt \
+  ${FILTERED}/hdh_contigs.txt \
+| sort | uniq -c | awk '$1 >= 1 {print $2}' \
 > results/anammox_contigs.txt
 
 # 7. mapping
-bowtie2-build ${CONTIGS} contigs
+bowtie2-build ${CONTIGS} ${MAPPING}/contigs
 
 for S in "${SAMPLES[@]}"; do
-  bowtie2 -x contigs \
-    -U qc/${S}.fq.gz \
+  bowtie2 -x ${MAPPING}/contigs \
+    -U ${QC}/${S}.fq.gz \
     --threads ${THREADS} \
-  | samtools sort -@ 8 -o qc/${S}.bam
-  samtools index qc/${S}.bam
-done > mapping.log 2>&1
+  | samtools sort -@ 8 -o ${MAPPING}/${S}.bam
+
+  samtools index ${MAPPING}/${S}.bam
+done > ${LOGS}/mapping.log 2>&1
 
 # 8. quantification
+# temp fix bam naming issue
 coverm contig \
-  --bam-files qc/A.bam qc/B.bam \
+  --bam-files ${MAPPING}/A.bam ${MAPPING}/B.bam ${MAPPING}/C.bam \
   --methods mean covered_fraction \
   --output-file results/coverm_all.tsv \
-  --threads ${THREADS} \
+  --threads ${THREADS}
 
 # Generate mapping summary
 echo -e "sample\tmapped\ttotal" > results/bam_mapped_summary.tsv
-for sample in A B; do
-    total=$(samtools view -c "qc/${sample}.bam")
-    mapped=$(samtools view -c -F 4 "qc/${sample}.bam")
+for sample in "${SAMPLES[@]}"; do
+    total=$(samtools view -c "cache/mapping/${sample}.bam")
+    mapped=$(samtools view -c -F 4 "cache/mapping/${sample}.bam")
     echo -e "${sample}\t${mapped}\t${total}" >> results/bam_mapped_summary.tsv
 done
 

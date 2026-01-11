@@ -1,3 +1,7 @@
-/hmm/
-/reads/
-/results/
+/hmm
+/reads
+/results
+/cache
+fastp.html
+fastp.json
+proteins.faa
